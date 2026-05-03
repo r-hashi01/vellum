@@ -1,0 +1,8 @@
+{
+  "name": "@vellum/react",
+  "version": "0.0.0",
+  "private": true,
+  "description": "React UI helpers for vellum (e.g. <DownloadPdfButton />)",
+  "type": "module",
+  "license": "MIT"
+}

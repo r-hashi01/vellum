@@ -1,0 +1,8 @@
+{
+  "name": "@vellum/validator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Static validator for vellum (canvas detection, CSS warnings)",
+  "type": "module",
+  "license": "MIT"
+}

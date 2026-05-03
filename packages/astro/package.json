@@ -1,0 +1,8 @@
+{
+  "name": "@vellum/astro",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Astro integration for vellum",
+  "type": "module",
+  "license": "MIT"
+}
