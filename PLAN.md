@@ -261,7 +261,10 @@ PDF 生成後に **自分で検算** する仕組み:
 - 単一ページ・基本 CSS のみ (text + background-color + img)
 - 透明化トリックの実証
 - Range API → 座標 → PDF テキスト配置の精度確認
-- ✅ Exit 条件: 1 枚の simple slide が画面と PDF で見分けつかない
+- 各段 (capture / walk / emit) の所要時間を計測してログ出力する `onProgress` 互換のプリミティブを入れる — 後段の最適化判断 (WASM / Worker / どちらでもないか) を実測ベースで下すため
+- ✅ Exit 条件:
+  1. 1 枚の simple slide が画面と PDF で見分けつかない
+  2. 3 枚の slide で `capture / walk / emit` の所要時間が出力され、ボトルネックがどこかが特定できる
 
 ### Phase 1: MVP (1 週)
 - 複数ページ対応

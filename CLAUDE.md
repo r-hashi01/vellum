@@ -74,7 +74,16 @@ Don't add CD pre-emptively. An npm token + accidental publish on `main` is a rea
 
 ## Phase status
 
-Tracked in `PLAN.md` § 9. Currently: **Phase 0-0 (skeleton)** complete; **Phase 0 (PoC)** is next — implement `domToPdf` for a single page with text + background-color + img, prove the transparency trick + Range → PDF text mapping.
+Tracked in `PLAN.md` § 9. Currently: **Phase 0-0 (skeleton)** complete; **Phase 0 (PoC)** is next — implement `domToPdf` for a single page with text + background-color + img, prove the transparency trick + Range → PDF text mapping, **and** ship per-stage timing (`capture / walk / emit`) so optimization in later phases is driven by measurement, not intuition.
+
+## Performance philosophy
+
+Measure first, optimize second. Specifically:
+
+- **The slowest stage (rasterization) is browser-native code** — it cannot be replaced by WASM. WASM is on the table only for targeted hot paths (font subsetting via harfbuzzjs, deflate, pixel-diff in self-check) and only after profiling shows a problem.
+- **Web Worker / OffscreenCanvas parallelism is the default scaling story** for multi-page decks. Design the `Rasterizer` interface so its inputs are serializable (no live DOM references in/out of the worker boundary). This unlocks parallelism without committing to Workers in v1.
+- Cache aggressively across pages within one PDF generation: union font glyph sets before subsetting once, reuse `embedJpg` results for repeated images.
+- Don't add WASM dependencies pre-emptively — bundle size is a real cost for a static-host library.
 
 ## Conventions
 
