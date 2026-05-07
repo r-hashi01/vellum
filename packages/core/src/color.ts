@@ -1,4 +1,4 @@
-import type { RGB } from './types.js'
+import type { RGB } from './types'
 
 const RGB_RE =
   /rgba?\(\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)\s*[, ]\s*(-?\d+\.?\d*)\s*(?:[,/]\s*(-?\d+\.?\d*%?)\s*)?\)/

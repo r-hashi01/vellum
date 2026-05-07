@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import * as api from './index.js'
+import * as api from './index'
 
 describe('public API surface', () => {
   it('exports the documented runtime entry points', () => {

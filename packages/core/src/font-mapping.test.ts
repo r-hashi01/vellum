@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { classifyFamily, pickStandardFont, type StandardFontKey } from './font-mapping.js'
-import { domPx, type FontStyle, type TextSpan } from './types.js'
+import { classifyFamily, pickStandardFont, type StandardFontKey } from './font-mapping'
+import { domPx, type FontStyle, type TextSpan } from './types'
 
 function span(
   fontFamily: string,

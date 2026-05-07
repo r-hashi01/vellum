@@ -1,8 +1,10 @@
-import { captureRaster } from './capture.js'
-import { emitPdf } from './emit.js'
-import { measure } from './timing.js'
-import type { DomToPdfOptions, DomToPdfResult, TextSpan } from './types.js'
-import { extractSpans } from './walk.js'
+import { captureRaster } from './capture'
+import { emitPdf } from './emit'
+import { discoverFontFaces } from './font-discovery'
+import { resolveWebFonts, type WebFontCandidate } from './font-resolver'
+import { measure } from './timing'
+import type { DomToPdfOptions, DomToPdfResult, TextSpan } from './types'
+import { extractSpans } from './walk'
 
 export async function domToPdf(opts: DomToPdfOptions): Promise<DomToPdfResult> {
   const pages = Array.from(opts.pages)
@@ -14,15 +16,13 @@ export async function domToPdf(opts: DomToPdfOptions): Promise<DomToPdfResult> {
   const jpegQuality = opts.jpegQuality ?? 0.85
   const pageRasters: Uint8Array[] = []
   const pageSpans: TextSpan[][] = []
+  const resolverWarnings: string[] = []
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
     if (!page) continue
     opts.onProgress?.(i, pages.length)
 
-    // Walk first, then capture. They could run in parallel since walk only
-    // reads and capture only writes (then restores) styles, but Phase 0 keeps
-    // it sequential for diagnosability.
     const spans = await measure(
       async () => extractSpans(page),
       (durationMs) => opts.onTiming?.({ stage: 'walk', page: i + 1, durationMs }),
@@ -42,11 +42,26 @@ export async function domToPdf(opts: DomToPdfOptions): Promise<DomToPdfResult> {
     pageRasters.push(raster)
   }
 
+  // Phase 2: discover document @font-face rules and fetch the bytes for the
+  // (family, weight, style) triples spans actually use. Resolution lives
+  // outside emit because it needs the live Document, while emit only sees
+  // serializable data.
+  const webFonts: WebFontCandidate[] = await measure(
+    async () =>
+      resolveWebFonts({
+        pageSpans,
+        rules: discoverFontFaces(document),
+        onWarning: (msg) => resolverWarnings.push(msg),
+      }),
+    (durationMs) => opts.onTiming?.({ stage: 'fonts', durationMs }),
+  )
+
   const emitResult = await measure(
     async () =>
       emitPdf({
         pageRasters,
         pageSpans,
+        webFonts,
         source: opts.source,
         output: { width: opts.output.width, height: opts.output.height },
         rasterFormat,
@@ -58,6 +73,6 @@ export async function domToPdf(opts: DomToPdfOptions): Promise<DomToPdfResult> {
 
   return {
     blob: new Blob([emitResult.bytes as BlobPart], { type: 'application/pdf' }),
-    warnings: emitResult.warnings,
+    warnings: [...resolverWarnings, ...emitResult.warnings],
   }
 }

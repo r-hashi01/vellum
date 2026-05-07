@@ -54,6 +54,7 @@ export interface DomToPdfOptions {
 export type TimingEvent =
   | { stage: 'walk'; page: number; durationMs: number }
   | { stage: 'capture'; page: number; durationMs: number }
+  | { stage: 'fonts'; durationMs: number }
   | { stage: 'emit'; durationMs: number }
 
 export interface DomToPdfResult {

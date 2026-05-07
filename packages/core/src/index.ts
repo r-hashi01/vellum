@@ -1,4 +1,4 @@
-export { domToPdf } from './dom-to-pdf.js'
+export { domToPdf } from './dom-to-pdf'
 export type {
   DomPx,
   DomToPdfOptions,
@@ -8,6 +8,6 @@ export type {
   RGB,
   TextSpan,
   TimingEvent,
-} from './types.js'
+} from './types'
 
 export const VERSION = '0.1.0'

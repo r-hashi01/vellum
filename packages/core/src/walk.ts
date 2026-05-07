@@ -1,5 +1,5 @@
-import { parseColor } from './color.js'
-import { type DomPx, domPx, type FontStyle, type TextSpan } from './types.js'
+import { parseColor } from './color'
+import { type DomPx, domPx, type FontStyle, type TextSpan } from './types'
 
 /**
  * Extract every visible text fragment from `root` as a flat list of

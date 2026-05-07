@@ -1,9 +1,9 @@
 import { PDFDict, PDFDocument, PDFName } from 'pdf-lib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { parseColor } from './color.js'
-import { domToPdf } from './dom-to-pdf.js'
-import type { TimingEvent } from './types.js'
-import { extractSpans } from './walk.js'
+import { parseColor } from './color'
+import { domToPdf } from './dom-to-pdf'
+import type { TimingEvent } from './types'
+import { extractSpans } from './walk'
 
 async function embeddedFontNames(blob: Blob): Promise<Set<string>> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
@@ -240,6 +240,81 @@ describe('domToPdf (PoC)', () => {
     expect(fonts).toContain('Helvetica')
     expect(fonts).not.toContain('Times-Roman')
     expect(fonts).not.toContain('Courier')
+  })
+
+  it('attempts to fetch @font-face fonts on the Google Fonts allowlist', async () => {
+    // Inject a real-looking @font-face so discoverFontFaces picks it up.
+    const style = document.createElement('style')
+    style.textContent = `
+      @font-face {
+        font-family: 'TestFont';
+        src: url('https://fonts.gstatic.com/s/testfont/v1/test.woff2') format('woff2');
+      }
+    `
+    document.head.appendChild(style)
+    // Intercept only the font URL — capture.ts also calls fetch() on data: URLs
+    // (its raster pipeline), and we must not break that. Pass-through otherwise.
+    const realFetch = globalThis.fetch.bind(globalThis)
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+        if (url.includes('fonts.gstatic.com')) {
+          // Fake non-font bytes — pdf-lib's embedFont will reject them. The
+          // pipeline must surface a warning rather than throw, and the span
+          // must still flow through using the standard font fallback.
+          return new Response(new Uint8Array([1, 2, 3, 4]).slice().buffer, { status: 200 })
+        }
+        return realFetch(input, init)
+      })
+    try {
+      const page = makePage(
+        '<p style="font-family: TestFont, sans-serif; font-size: 16px; margin: 24px;">hello</p>',
+      )
+      const result = await domToPdf({
+        pages: [page],
+        source: { width: 800, height: 600 },
+        output: { width: 400, height: 300, unit: 'pt' },
+      })
+      expect(fetchSpy).toHaveBeenCalledWith('https://fonts.gstatic.com/s/testfont/v1/test.woff2')
+      expect(result.blob.type).toBe('application/pdf')
+      // Bad bytes → warning, fallback to Helvetica
+      const warn = result.warnings.join(' ')
+      expect(warn.toLowerCase()).toContain('testfont')
+      const fonts = await embeddedFontNames(result.blob)
+      expect(fonts).toContain('Helvetica')
+    } finally {
+      fetchSpy.mockRestore()
+      style.remove()
+    }
+  })
+
+  it('does not fetch fonts whose @font-face src is not on the Google Fonts allowlist', async () => {
+    const style = document.createElement('style')
+    style.textContent = `
+      @font-face {
+        font-family: 'EvilFont';
+        src: url('https://attacker.example/evil.woff2');
+      }
+    `
+    document.head.appendChild(style)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      const page = makePage(
+        '<p style="font-family: EvilFont, sans-serif; font-size: 16px; margin: 24px;">hello</p>',
+      )
+      const result = await domToPdf({
+        pages: [page],
+        source: { width: 800, height: 600 },
+        output: { width: 400, height: 300, unit: 'pt' },
+      })
+      expect(fetchSpy).not.toHaveBeenCalledWith('https://attacker.example/evil.woff2')
+      expect(result.warnings.join(' ').toLowerCase()).toContain('allowlist')
+    } finally {
+      fetchSpy.mockRestore()
+      style.remove()
+    }
   })
 
   it('calls onProgress', async () => {

@@ -1,4 +1,4 @@
-import type { TextSpan } from './types.js'
+import type { TextSpan } from './types'
 
 /**
  * One of the 14 PDF standard fonts. The string values match pdf-lib's

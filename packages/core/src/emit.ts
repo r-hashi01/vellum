@@ -1,10 +1,18 @@
+import * as fontkit from 'fontkit'
 import { PDFDocument, type PDFFont, rgb } from 'pdf-lib'
-import { pickStandardFont, type StandardFontKey } from './font-mapping.js'
-import type { TextSpan } from './types.js'
+import { pickStandardFont, type StandardFontKey } from './font-mapping'
+import { findCandidate, type WebFontCandidate } from './font-resolver'
+import type { TextSpan } from './types'
 
 export interface EmitOptions {
   pageRasters: Uint8Array[]
   pageSpans: TextSpan[][]
+  /**
+   * @font-face fonts already fetched from allowed origins. Each becomes a
+   * subsetted PDF font; spans whose font-family chain matches a candidate
+   * use it instead of the standard PDF font fallback.
+   */
+  webFonts: WebFontCandidate[]
   /** Logical DOM size of every page (assumed identical). */
   source: { width: number; height: number }
   /** PDF page size in points. */
@@ -24,16 +32,38 @@ interface FontEntry {
 
 export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
   const pdf = await PDFDocument.create()
+  // pdf-lib refuses to embed non-standard fonts unless fontkit is registered.
+  // Done unconditionally — registration is cheap and the standard-only path
+  // is unaffected.
+  pdf.registerFontkit(fontkit as unknown as Parameters<typeof pdf.registerFontkit>[0])
+
+  const warnings: string[] = []
+
+  // Subset and embed every web font candidate up front. If embedding fails
+  // (corrupt bytes, unsupported format), we record a warning and let the
+  // affected spans fall back to the standard PDF font path — failures stay
+  // visible (degraded), never silent.
+  const webFonts = new Map<WebFontCandidate, FontEntry>()
+  for (const wf of opts.webFonts) {
+    try {
+      const font = await pdf.embedFont(wf.bytes, { subset: true })
+      webFonts.set(wf, { font, encoder: createSafeEncoder(font) })
+    } catch (err) {
+      warnings.push(
+        `Embedding @font-face "${wf.family}" failed: ${(err as Error).message}. ` +
+          `Falling back to the standard PDF font for that span.`,
+      )
+    }
+  }
 
   // Lazily embed only the standard fonts that actually appear in the deck.
-  // Embedding all 12 up front would bloat tiny PDFs.
-  const fonts = new Map<StandardFontKey, FontEntry>()
-  const getFont = async (key: StandardFontKey): Promise<FontEntry> => {
-    let entry = fonts.get(key)
+  const standardFonts = new Map<StandardFontKey, FontEntry>()
+  const getStandardFont = async (key: StandardFontKey): Promise<FontEntry> => {
+    let entry = standardFonts.get(key)
     if (!entry) {
       const font = await pdf.embedFont(key)
       entry = { font, encoder: createSafeEncoder(font) }
-      fonts.set(key, entry)
+      standardFonts.set(key, entry)
     }
     return entry
   }
@@ -58,27 +88,28 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
 
     const spans = opts.pageSpans[i] ?? []
     for (const span of spans) {
-      const key = pickStandardFont(span)
-      const { font, encoder } = await getFont(key)
+      const wf = findCandidate(opts.webFonts, span)
+      const entry = wf ? webFonts.get(wf) : undefined
+      const { font, encoder } = entry ?? (await getStandardFont(pickStandardFont(span)))
       const safeText = encoder.encode(span.text)
-      // The whole span is unencodable (CJK page in Phase 1, etc.) — skip
-      // entirely so the missing text is *visible* (no selectable layer there)
-      // rather than silently substituted.
+      // The whole span is unencodable — skip entirely so the missing text is
+      // *visible* (no selectable layer there) rather than silently substituted.
       if (safeText.length === 0) continue
       drawSpan(page, font, { ...span, text: safeText }, scaleX, scaleY, opts.output.height)
     }
   }
 
   const bytes = await pdf.save()
-  const warnings = collectWarnings(fonts)
+  warnings.push(...collectFallbackWarnings(standardFonts))
   return { bytes, warnings }
 }
 
-function collectWarnings(fonts: Map<StandardFontKey, FontEntry>): string[] {
+function collectFallbackWarnings(fonts: Map<StandardFontKey, FontEntry>): string[] {
   // Union the unencodable sets from every embedded standard font: a character
   // missing from one variant (e.g. Helvetica-Bold) is also missing from the
   // others, so this is effectively the deck-wide set of characters that the
-  // standard PDF fonts can't represent (CJK, emoji, …).
+  // standard PDF fonts can't represent (CJK, emoji, …) and that no @font-face
+  // covered either.
   const all = new Set<string>()
   for (const { encoder } of fonts.values()) {
     for (const ch of encoder.unencodable) all.add(ch)
@@ -88,7 +119,7 @@ function collectWarnings(fonts: Map<StandardFontKey, FontEntry>): string[] {
   return [
     `Standard PDF fonts cannot encode ${all.size} character(s); ` +
       `text containing them was dropped from the selectable layer (raster still shows them). ` +
-      `Sample: "${sample}". Phase 2 will fix this by subsetting @font-face fonts.`,
+      `Sample: "${sample}". Add an @font-face that covers these characters to fix.`,
   ]
 }
 
@@ -102,9 +133,6 @@ function drawSpan(
 ): void {
   // CSS rect.y is the top of the line box (axis pointing down).
   // PDF drawText's y is the baseline (axis pointing up).
-  // For default line-height the baseline sits ~rect.y + rect.h; small
-  // mismatches between the raster's fonts and the standard PDF fonts are
-  // acceptable here since the user reads the raster, not the vector glyphs.
   const baselineCss = span.y + span.h
   const baselinePdf = outputHeight - baselineCss * scaleY
 
