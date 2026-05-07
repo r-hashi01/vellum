@@ -1,4 +1,4 @@
-import { domToPdf, type TimingEvent } from '../packages/core/src/index.js'
+import { domToPdf, type TimingEvent } from '../packages/core/src/index'
 
 const button = document.getElementById('generate') as HTMLButtonElement
 const status = document.getElementById('status') as HTMLSpanElement
@@ -34,6 +34,13 @@ button.addEventListener('click', async () => {
 
     const total = events.reduce((s, e) => s + e.durationMs, 0)
     status.textContent = `Done — ${result.blob.size.toLocaleString()} bytes, ${total.toFixed(0)} ms total`
+
+    if (result.warnings.length > 0) {
+      log.textContent += `\n--- ${result.warnings.length} warning(s) ---\n`
+      for (const w of result.warnings) log.textContent += `${w}\n\n`
+    } else {
+      log.textContent += `\n(no warnings)\n`
+    }
   } catch (err) {
     status.textContent = `Error: ${(err as Error).message}`
     console.error(err)
@@ -44,8 +51,8 @@ button.addEventListener('click', async () => {
 
 function appendTiming(e: TimingEvent): void {
   const line =
-    e.stage === 'emit'
-      ? `emit               ${e.durationMs.toFixed(1)} ms`
+    e.stage === 'emit' || e.stage === 'fonts'
+      ? `${e.stage.padEnd(10)}        ${e.durationMs.toFixed(1)} ms`
       : `${e.stage.padEnd(10)} page ${e.page}   ${e.durationMs.toFixed(1)} ms`
   log.textContent = `${log.textContent ?? ''}${line}\n`
 }

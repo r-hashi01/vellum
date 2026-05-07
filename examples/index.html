@@ -3,6 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <title>vellum — Phase 0 PoC</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap"
+    />
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -109,6 +115,18 @@
         This paragraph deliberately wraps across multiple lines to exercise the
         Range API line-splitting code path. Each visual line should become its
         own text span with its own (x, y) in the resulting PDF.
+      </p>
+    </div>
+
+    <div class="slide" data-slide>
+      <h1 style="font-family: Inter, sans-serif; font-weight: 700">Phase 2: webfont subset</h1>
+      <p style="font-family: Inter, sans-serif; font-size: 22px; color: #333; margin: 24px 60px">
+        This whole slide is set in <b>Inter</b>, fetched from
+        <code style="font-family: Menlo, monospace">fonts.gstatic.com</code> and embedded
+        as a subsetted PDF font. Compare with the next slide (Phase 1, standard fonts).
+      </p>
+      <p style="font-family: Inter, sans-serif; font-weight: 400; font-size: 18px; color: #666; margin: 24px 60px">
+        After download, select this paragraph in the PDF — copy/paste should preserve the Inter glyphs.
       </p>
     </div>
 

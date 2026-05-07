@@ -106,6 +106,20 @@ describe('extractSpans', () => {
     expect(spans[0]?.text).toBe('Hello world.')
   })
 
+  it('preserves a single space between inline siblings (bold/code/etc.) when joined back', () => {
+    // Without this guarantee, selecting text in the PDF and copy-pasting
+    // produces e.g. "HelloWorld" instead of "Hello World" — the leading/
+    // trailing whitespace at inline boundaries is semantically meaningful
+    // and must survive the walker.
+    const page = makePage(
+      '<p style="font-size: 16px; margin: 0; color: black;">' +
+        'Hello <b>bold</b> and <code>code</code>!</p>',
+    )
+    const spans = extractSpans(page)
+    const joined = spans.map((s) => s.text).join('')
+    expect(joined).toBe('Hello bold and code!')
+  })
+
   it('splits a wrapped paragraph into one span per visual line', () => {
     // Force wrapping with a narrow container.
     const page = makePage(

@@ -2,6 +2,7 @@ import * as fontkit from 'fontkit'
 import { PDFDocument, type PDFFont, rgb } from 'pdf-lib'
 import { pickStandardFont, type StandardFontKey } from './font-mapping'
 import { findCandidate, type WebFontCandidate } from './font-resolver'
+import { planInlineLayout } from './layout'
 import type { TextSpan } from './types'
 
 export interface EmitOptions {
@@ -87,6 +88,15 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
     })
 
     const spans = opts.pageSpans[i] ?? []
+    // Pass 1: encode + measure each span so we can plan inline-boundary
+    // snapping with knowledge of how wide the PDF glyphs actually are.
+    interface Drawable {
+      span: TextSpan
+      safeText: string
+      font: PDFFont
+      drawnWidthDom: number
+    }
+    const drawables: Drawable[] = []
     for (const span of spans) {
       const wf = findCandidate(opts.webFonts, span)
       const entry = wf ? webFonts.get(wf) : undefined
@@ -95,7 +105,25 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
       // The whole span is unencodable — skip entirely so the missing text is
       // *visible* (no selectable layer there) rather than silently substituted.
       if (safeText.length === 0) continue
-      drawSpan(page, font, { ...span, text: safeText }, scaleX, scaleY, opts.output.height)
+      const drawnWidthPt = font.widthOfTextAtSize(safeText, span.fontSize * scaleY)
+      drawables.push({ span, safeText, font, drawnWidthDom: drawnWidthPt / scaleX })
+    }
+    const layout = planInlineLayout(
+      drawables.map((d) => ({ span: d.span, drawnWidthDom: d.drawnWidthDom })),
+    )
+    // Pass 2: draw with snapped x where appropriate.
+    for (let j = 0; j < drawables.length; j++) {
+      const d = drawables[j]
+      const plan = layout[j]
+      if (!d || !plan) continue
+      drawSpan(
+        page,
+        d.font,
+        { ...d.span, text: d.safeText, x: plan.drawnX as TextSpan['x'] },
+        scaleX,
+        scaleY,
+        opts.output.height,
+      )
     }
   }
 
