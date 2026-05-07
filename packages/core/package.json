@@ -1,7 +1,27 @@
 {
   "name": "@vellum/core",
-  "version": "0.0.0",
-  "description": "DOM → high-quality PDF: raster background + vector text hybrid",
+  "version": "0.1.0",
+  "description": "DOM → high-quality PDF in the browser: raster background + vector text overlay. Selectable, searchable, copyable text.",
+  "keywords": [
+    "pdf",
+    "dom-to-pdf",
+    "html-to-pdf",
+    "browser",
+    "vector-text",
+    "raster",
+    "pdf-lib",
+    "client-side"
+  ],
+  "homepage": "https://github.com/r-hashi01/vellum#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/r-hashi01/vellum.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/r-hashi01/vellum/issues"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -41,6 +61,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "license": "MIT"
+  }
 }

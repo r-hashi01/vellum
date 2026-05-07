@@ -1,4 +1,5 @@
-import { PDFDocument, type PDFFont, rgb, StandardFonts } from 'pdf-lib'
+import { PDFDocument, type PDFFont, rgb } from 'pdf-lib'
+import { pickStandardFont, type StandardFontKey } from './font-mapping.js'
 import type { TextSpan } from './types.js'
 
 export interface EmitOptions {
@@ -16,12 +17,26 @@ export interface EmitResult {
   warnings: string[]
 }
 
+interface FontEntry {
+  font: PDFFont
+  encoder: SafeEncoder
+}
+
 export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
   const pdf = await PDFDocument.create()
-  // Phase 0 fallback: a single standard font for everything. Phase 2 replaces
-  // this with @font-face + fontkit subsetting and the encoding limit goes away.
-  const font = await pdf.embedFont(StandardFonts.Helvetica)
-  const encoder = createSafeEncoder(font)
+
+  // Lazily embed only the standard fonts that actually appear in the deck.
+  // Embedding all 12 up front would bloat tiny PDFs.
+  const fonts = new Map<StandardFontKey, FontEntry>()
+  const getFont = async (key: StandardFontKey): Promise<FontEntry> => {
+    let entry = fonts.get(key)
+    if (!entry) {
+      const font = await pdf.embedFont(key)
+      entry = { font, encoder: createSafeEncoder(font) }
+      fonts.set(key, entry)
+    }
+    return entry
+  }
 
   const scaleX = opts.output.width / opts.source.width
   const scaleY = opts.output.height / opts.source.height
@@ -43,8 +58,10 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
 
     const spans = opts.pageSpans[i] ?? []
     for (const span of spans) {
+      const key = pickStandardFont(span)
+      const { font, encoder } = await getFont(key)
       const safeText = encoder.encode(span.text)
-      // The whole span is unencodable (CJK page in Phase 0, etc.) — skip
+      // The whole span is unencodable (CJK page in Phase 1, etc.) — skip
       // entirely so the missing text is *visible* (no selectable layer there)
       // rather than silently substituted.
       if (safeText.length === 0) continue
@@ -53,16 +70,26 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
   }
 
   const bytes = await pdf.save()
-  const warnings: string[] = []
-  if (encoder.unencodable.size > 0) {
-    const sample = [...encoder.unencodable].slice(0, 12).join('')
-    warnings.push(
-      `Helvetica fallback (Phase 0) cannot encode ${encoder.unencodable.size} character(s); ` +
-        `text containing them was dropped from the selectable layer (raster still shows them). ` +
-        `Sample: "${sample}". This is fixed in Phase 2 when @font-face fonts are subsetted.`,
-    )
-  }
+  const warnings = collectWarnings(fonts)
   return { bytes, warnings }
+}
+
+function collectWarnings(fonts: Map<StandardFontKey, FontEntry>): string[] {
+  // Union the unencodable sets from every embedded standard font: a character
+  // missing from one variant (e.g. Helvetica-Bold) is also missing from the
+  // others, so this is effectively the deck-wide set of characters that the
+  // standard PDF fonts can't represent (CJK, emoji, …).
+  const all = new Set<string>()
+  for (const { encoder } of fonts.values()) {
+    for (const ch of encoder.unencodable) all.add(ch)
+  }
+  if (all.size === 0) return []
+  const sample = [...all].slice(0, 12).join('')
+  return [
+    `Standard PDF fonts cannot encode ${all.size} character(s); ` +
+      `text containing them was dropped from the selectable layer (raster still shows them). ` +
+      `Sample: "${sample}". Phase 2 will fix this by subsetting @font-face fonts.`,
+  ]
 }
 
 function drawSpan(
@@ -76,8 +103,8 @@ function drawSpan(
   // CSS rect.y is the top of the line box (axis pointing down).
   // PDF drawText's y is the baseline (axis pointing up).
   // For default line-height the baseline sits ~rect.y + rect.h; small
-  // mismatches between the raster's fonts and Helvetica are acceptable in
-  // Phase 0 since the user reads the raster, not the vector glyphs.
+  // mismatches between the raster's fonts and the standard PDF fonts are
+  // acceptable here since the user reads the raster, not the vector glyphs.
   const baselineCss = span.y + span.h
   const baselinePdf = outputHeight - baselineCss * scaleY
 

@@ -1,8 +1,26 @@
+import { PDFDict, PDFDocument, PDFName } from 'pdf-lib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseColor } from './color.js'
 import { domToPdf } from './dom-to-pdf.js'
 import type { TimingEvent } from './types.js'
 import { extractSpans } from './walk.js'
+
+async function embeddedFontNames(blob: Blob): Promise<Set<string>> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const doc = await PDFDocument.load(bytes)
+  const names = new Set<string>()
+  for (const page of doc.getPages()) {
+    const resources = page.node.Resources()
+    const fontDict = resources?.lookup(PDFName.of('Font'), PDFDict)
+    if (!fontDict) continue
+    for (const key of fontDict.keys()) {
+      const font = fontDict.lookup(key, PDFDict)
+      const baseFont = font.lookup(PDFName.of('BaseFont'))
+      if (baseFont instanceof PDFName) names.add(baseFont.asString().replace(/^\//, ''))
+    }
+  }
+  return names
+}
 
 const trackedNodes: HTMLElement[] = []
 function makePage(html: string, width = 800, height = 600): HTMLElement {
@@ -182,6 +200,46 @@ describe('domToPdf (PoC)', () => {
     const w = result.warnings.join(' ')
     expect(w).toMatch(/cannot encode/i)
     expect(w).toContain('→')
+  })
+
+  it('embeds the standard font matching each span (serif → Times, mono → Courier, bold → Bold variant)', async () => {
+    // The user reads the raster, but we still want the *vector* layer that
+    // search/copy/select uses to roughly match the visible style — bold text
+    // copies as bold text, code as monospace, etc. We assert that by looking
+    // for the BaseFont names directly in the PDF byte stream.
+    const page = makePage(
+      [
+        '<p style="font-family: Arial, sans-serif; font-size: 16px; margin: 24px;">sans</p>',
+        '<p style="font-family: Georgia, serif; font-size: 16px; margin: 24px;">serif</p>',
+        '<p style="font-family: Menlo, monospace; font-size: 16px; margin: 24px;">mono</p>',
+        '<p style="font-family: Arial, sans-serif; font-weight: 700; font-size: 16px; margin: 24px;">bold</p>',
+      ].join(''),
+    )
+    const result = await domToPdf({
+      pages: [page],
+      source: { width: 800, height: 600 },
+      output: { width: 400, height: 300, unit: 'pt' },
+    })
+    const fonts = await embeddedFontNames(result.blob)
+    expect(fonts).toContain('Helvetica')
+    expect(fonts).toContain('Helvetica-Bold')
+    expect(fonts).toContain('Times-Roman')
+    expect(fonts).toContain('Courier')
+  })
+
+  it('does not embed standard fonts that are not used (Times absent for an all-sans-serif deck)', async () => {
+    const page = makePage(
+      '<p style="font-family: Arial, sans-serif; font-size: 16px; margin: 24px;">just sans</p>',
+    )
+    const result = await domToPdf({
+      pages: [page],
+      source: { width: 800, height: 600 },
+      output: { width: 400, height: 300, unit: 'pt' },
+    })
+    const fonts = await embeddedFontNames(result.blob)
+    expect(fonts).toContain('Helvetica')
+    expect(fonts).not.toContain('Times-Roman')
+    expect(fonts).not.toContain('Courier')
   })
 
   it('calls onProgress', async () => {
