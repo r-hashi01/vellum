@@ -1,0 +1,15 @@
+{
+  "$schema": "https://claude.ai/schemas/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-status.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

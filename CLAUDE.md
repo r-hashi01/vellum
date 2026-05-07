@@ -17,9 +17,12 @@ vellum/
 ├── PLAN.md               # full design doc (read this first)
 ├── packages/
 │   ├── core/             # @vellum/core — Walker + Rasterizer + PDF Emitter
-│   ├── validator/        # @vellum/validator — placeholder (Phase 2)
-│   ├── react/            # @vellum/react — placeholder (Phase 3)
-│   └── astro/            # @vellum/astro — placeholder (Phase 3)
+│   ├── validator/        # @vellum/validator — placeholder
+│   ├── react/            # @vellum/react — placeholder
+│   └── astro/            # @vellum/astro — placeholder
+├── examples/             # `pnpm example` — vite-served playground for manual visual verification
+├── .github/workflows/    # CI (ci.yml: lint + typecheck + build + browser test)
+├── .claude/              # session-start hook + per-project Claude settings
 ├── package.json          # pnpm workspace root
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json    # shared strict TS config
@@ -47,6 +50,7 @@ pnpm test                 # run tests (boots a real Chromium via Playwright)
 pnpm typecheck            # tsc --noEmit across packages
 pnpm lint                 # biome check
 pnpm format               # biome format --write
+pnpm example              # vite-served playground in examples/ for manual visual verification
 
 # Per-package:
 pnpm --filter @vellum/core build
@@ -64,7 +68,7 @@ First-time test runs need Playwright browsers: `pnpm exec playwright install chr
 
 Both jobs use Node from `.nvmrc` and `pnpm install --frozen-lockfile`, so the lockfile is the source of truth — never let CI run with a drifted lockfile. If you bump a dep, commit the updated `pnpm-lock.yaml` in the same PR.
 
-**CD (npm publish):** intentionally **not set up yet**. Will be added when we're ready to publish (Phase 1 MVP exit, earliest). At that point the recommended path is:
+**CD (npm publish):** intentionally **not wired up**. The recommended path when it's time:
 
 - `changesets` for version + changelog management (works well with pnpm workspace)
 - A `release.yml` workflow that consumes a `NPM_TOKEN` secret to publish `@vellum/core`
@@ -72,9 +76,13 @@ Both jobs use Node from `.nvmrc` and `pnpm install --frozen-lockfile`, so the lo
 
 Don't add CD pre-emptively. An npm token + accidental publish on `main` is a real failure mode.
 
-## Phase status
+## Volatile state (do NOT add it to this file)
 
-Tracked in `PLAN.md` § 9. Currently: **Phase 0-0 (skeleton)** complete; **Phase 0 (PoC)** is next — implement `domToPdf` for a single page with text + background-color + img, prove the transparency trick + Range → PDF text mapping, **and** ship per-stage timing (`capture / walk / emit`) so optimization in later phases is driven by measurement, not intuition.
+Anything that changes as the project advances — current phase, version, list of in-progress modules, what's uncommitted, what's next — is **auto-injected at session start** by `.claude/hooks/session-status.sh`. That hook reads `git log`, `package.json` version, and the file tree, then prints a status block into this session's context.
+
+The roadmap itself lives in `PLAN.md` § 9.
+
+This file (`CLAUDE.md`) only changes when the project's *nature* changes: invariants, toolchain, layout, conventions, philosophy. Don't put a "current phase" line here — it will go stale.
 
 ## Performance philosophy
 
@@ -87,7 +95,7 @@ Measure first, optimize second. Specifically:
 
 ## Conventions
 
-- New files in `@vellum/core/src/`: ESM, `.ts`. When importing local files, use the `.js` extension in the import specifier (`from './foo.js'`) — it's required because `verbatimModuleSyntax` + `moduleResolution: Bundler` is strict about emitted output.
+- New files in `@vellum/core/src/`: ESM, `.ts`. Local imports are extensionless (`from './foo'`) — `moduleResolution: Bundler` resolves them, and tsup/esbuild handles emit. Do **not** add `.js` suffixes.
 - Prefer pure functions over classes. The pipeline is: `walk(page) → spans`, `capture(page) → raster`, `emit(spans, raster) → PDF`. Each stage should be testable in isolation.
 - Don't mutate the user's DOM permanently. Style injection for the transparency trick must be reverted in a `finally` block, even on throw.
 - No `console.log` in shipped code. Use a typed `onProgress` / `onWarning` hook on the public API.
