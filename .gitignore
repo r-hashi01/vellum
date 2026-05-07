@@ -15,3 +15,5 @@ __screenshots__
 !.vscode/extensions.json
 .idea
 .turbo
+
+progress.md

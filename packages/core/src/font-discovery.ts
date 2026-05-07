@@ -1,14 +1,16 @@
 import type { FontStyle } from './types'
+import { type CodePointRange, parseUnicodeRange } from './unicode-range'
 
 /**
  * A normalized `@font-face` declaration. Family is lowercased + dequoted so
  * matching is a plain string compare. `weight` is always a single number;
  * keyword forms (`bold`, `normal`) and ranges are resolved at parse time.
  *
- * Phase 2 v1 intentionally ignores `unicode-range`, `font-stretch`, and
- * fallback `format()` hints. They become relevant only when a single family
- * is split across multiple files (e.g. Latin / CJK Noto subsets), which we
- * defer to a follow-up.
+ * `unicodeRange === null` means the rule has no constraint and covers every
+ * code point (the CSS default when the descriptor is absent or unparsable).
+ * When non-null, the rule is only used for code points it explicitly covers,
+ * which is how Google Fonts splits a family across Latin / Latin-Ext /
+ * Cyrillic / etc. subsets.
  */
 export interface FontFaceRule {
   family: string
@@ -16,6 +18,7 @@ export interface FontFaceRule {
   style: FontStyle
   /** First http(s) `url()` in the `src:` chain. Local-only rules are dropped. */
   src: string
+  unicodeRange: CodePointRange[] | null
 }
 
 /**
@@ -53,6 +56,7 @@ function parseFontFaceRule(rule: CSSFontFaceRule): FontFaceRule | null {
     weight: parseWeight(decl.getPropertyValue('font-weight')),
     style: parseStyle(decl.getPropertyValue('font-style')),
     src,
+    unicodeRange: parseUnicodeRange(decl.getPropertyValue('unicode-range') ?? ''),
   }
 }
 
@@ -121,6 +125,24 @@ export function matchFontFace(
     return scoreBest(candidates, span)
   }
   return null
+}
+
+/**
+ * Like `matchFontFace`, but returns *every* rule that shares the matched
+ * `(family, weight, style)` triple — typically because the family is split
+ * across multiple unicode-range subsets (Google Fonts: latin, latin-ext,
+ * cyrillic, …). Callers fetch each subset and select per-character at draw
+ * time. Returns `[]` if no family in the chain has any rules.
+ */
+export function matchFontFaceRules(
+  rules: FontFaceRule[],
+  span: { fontFamily: string; fontWeight: number; fontStyle: FontStyle },
+): FontFaceRule[] {
+  const best = matchFontFace(rules, span)
+  if (!best) return []
+  return rules.filter(
+    (r) => r.family === best.family && r.weight === best.weight && r.style === best.style,
+  )
 }
 
 function scoreBest(

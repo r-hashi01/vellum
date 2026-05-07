@@ -4,6 +4,7 @@ import {
   type FontFaceRule,
   isAllowedFontUrl,
   matchFontFace,
+  matchFontFaceRules,
 } from './font-discovery'
 import type { FontStyle } from './types'
 
@@ -20,7 +21,7 @@ afterEach(() => {
 })
 
 function rule(family: string, weight: number, style: FontStyle, src: string): FontFaceRule {
-  return { family, weight, style, src }
+  return { family, weight, style, src, unicodeRange: null }
 }
 
 describe('discoverFontFaces', () => {
@@ -160,6 +161,58 @@ describe('matchFontFace', () => {
     // We rank style-match higher to keep visual feel (italic stays italic).
     expect(m?.style).toBe('italic')
     expect(m?.weight).toBe(400)
+  })
+})
+
+describe('matchFontFaceRules', () => {
+  it('returns every rule sharing the matched family/weight/style triple, regardless of unicode-range', () => {
+    // Google Fonts pattern: the same Inter 400 normal split into latin /
+    // latin-ext / cyrillic subsets. We must keep all three so per-character
+    // selection at draw time can pick the right subset.
+    const latin: FontFaceRule = {
+      family: 'inter',
+      weight: 400,
+      style: 'normal',
+      src: 'https://fonts.gstatic.com/inter-latin.woff2',
+      unicodeRange: [{ start: 0, end: 0x024f }],
+    }
+    const latinExt: FontFaceRule = {
+      family: 'inter',
+      weight: 400,
+      style: 'normal',
+      src: 'https://fonts.gstatic.com/inter-latin-ext.woff2',
+      unicodeRange: [{ start: 0x0100, end: 0x024f }],
+    }
+    const cyr: FontFaceRule = {
+      family: 'inter',
+      weight: 400,
+      style: 'normal',
+      src: 'https://fonts.gstatic.com/inter-cyrillic.woff2',
+      unicodeRange: [{ start: 0x0400, end: 0x04ff }],
+    }
+    const otherWeight: FontFaceRule = {
+      family: 'inter',
+      weight: 700,
+      style: 'normal',
+      src: 'https://fonts.gstatic.com/inter-700-latin.woff2',
+      unicodeRange: [{ start: 0, end: 0x024f }],
+    }
+    const matched = matchFontFaceRules([latin, latinExt, cyr, otherWeight], {
+      fontFamily: 'Inter',
+      fontWeight: 400,
+      fontStyle: 'normal',
+    })
+    expect(matched).toEqual([latin, latinExt, cyr])
+  })
+
+  it('returns [] when no family in the chain has rules', () => {
+    expect(
+      matchFontFaceRules([], {
+        fontFamily: 'Arial',
+        fontWeight: 400,
+        fontStyle: 'normal',
+      }),
+    ).toEqual([])
   })
 })
 
