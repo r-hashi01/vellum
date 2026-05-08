@@ -42,4 +42,91 @@ describe('PdfDoc', () => {
       pdf.destroy()
     }
   })
+
+  it('embeds a JPEG image and registers it in the page resources so pdfjs sees the XObject', async () => {
+    const canvas = new OffscreenCanvas(40, 30)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('2d context unavailable')
+    ctx.fillStyle = '#3366cc'
+    ctx.fillRect(0, 0, 40, 30)
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 })
+    const jpegBytes = new Uint8Array(await blob.arrayBuffer())
+
+    const doc = new PdfDoc()
+    const handle = doc.embedJpeg(jpegBytes)
+    expect(handle.width).toBe(40)
+    expect(handle.height).toBe(30)
+    const page = doc.addPage(400, 300)
+    page.drawImage(handle, 0, 0, 400, 300)
+    const bytes = doc.save()
+
+    const pdf = await loadPdf(bytes)
+    try {
+      const pdfPage = await pdf.getPage(1)
+      const opList = await pdfPage.getOperatorList()
+      // pdfjs surfaces the actual op enums on OPS — the image op is `paintImageXObject`.
+      const { OPS } = await import('pdfjs-dist')
+      const drewImage = opList.fnArray.includes(OPS.paintImageXObject)
+      expect(drewImage).toBe(true)
+    } finally {
+      pdf.destroy()
+    }
+  })
+
+  it('embeds a standard font and draws text that pdfjs reads back at the right position', async () => {
+    const doc = new PdfDoc()
+    const helv = doc.embedStandardFont('Helvetica')
+    const page = doc.addPage(400, 200)
+    page.drawText('Hello PDF', helv, 50, 100, 24)
+    const bytes = doc.save()
+
+    const pdf = await loadPdf(bytes)
+    try {
+      const pdfPage = await pdf.getPage(1)
+      const content = await pdfPage.getTextContent()
+      const items = content.items as Array<{ str: string; transform: number[] }>
+      const joined = items.map((it) => it.str).join('')
+      expect(joined).toContain('Hello PDF')
+      // pdfjs's transform = [a b c d e f] — e/f are x,y at the text item's
+      // baseline. We placed the text at (50, 100); a small drift is OK.
+      const item = items.find((it) => it.str.includes('Hello'))
+      expect(item).toBeDefined()
+      expect(item?.transform[4]).toBeCloseTo(50, 0)
+      expect(item?.transform[5]).toBeCloseTo(100, 0)
+    } finally {
+      pdf.destroy()
+    }
+  })
+
+  it('reports characters that fall outside WinAnsi as warnings rather than corrupting the stream', () => {
+    const doc = new PdfDoc()
+    const helv = doc.embedStandardFont('Helvetica')
+    const page = doc.addPage(400, 200)
+    page.drawText('A→中B', helv, 0, 100, 12)
+    const warnings = doc.collectWarnings()
+    expect(warnings.some((w) => /unencodable|cannot encode/i.test(w))).toBe(true)
+    expect(warnings.some((w) => w.includes('→'))).toBe(true)
+  })
+
+  it('reuses the same Image XObject when drawn twice on the same page', async () => {
+    const canvas = new OffscreenCanvas(8, 8)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('2d context unavailable')
+    ctx.fillRect(0, 0, 8, 8)
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg' })
+    const jpegBytes = new Uint8Array(await blob.arrayBuffer())
+
+    const doc = new PdfDoc()
+    const handle = doc.embedJpeg(jpegBytes)
+    const page = doc.addPage(100, 100)
+    page.drawImage(handle, 0, 0, 50, 50)
+    page.drawImage(handle, 50, 50, 50, 50)
+    const bytes = doc.save()
+
+    // Decoded as latin-1 the resource name only appears once in the dict —
+    // both draw calls share /Im0 rather than allocating /Im0 + /Im1.
+    const text = new TextDecoder('latin1').decode(bytes)
+    const matches = [...text.matchAll(/\/Im\d+\s+\d+\s+\d+\s+R/g)]
+    expect(matches).toHaveLength(1)
+  })
 })
