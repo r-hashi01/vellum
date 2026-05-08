@@ -1,4 +1,4 @@
-import { CidFontHandle } from './cid-font'
+import { CidFontHandle, type CidFontOptions } from './cid-font'
 import { parseJpegInfo } from './jpeg'
 import {
   PdfArray,
@@ -248,9 +248,13 @@ export class PdfDoc {
    * WOFF2 — fontkit handles the unwrapping). Returns a handle that drawText
    * uses to lay out runs; the font's /W array and /ToUnicode CMap are
    * generated at save() based on the glyphs that actually got drawn.
+   *
+   * `options.onWarning` (if supplied) receives soft-failure messages from
+   * encode/finalize — fontkit occasionally chokes on specific subsets and
+   * the in-house emitter degrades visibly rather than throwing.
    */
-  embedCidFont(bytes: Uint8Array): CidFontHandle {
-    const handle = new CidFontHandle(this.writer, bytes)
+  embedCidFont(bytes: Uint8Array, options?: CidFontOptions): CidFontHandle {
+    const handle = new CidFontHandle(this.writer, bytes, options)
     this.cidFonts.push(handle)
     return handle
   }

@@ -62,6 +62,11 @@ interface FontkitFont {
   createSubset(): FontkitSubset
 }
 
+export interface CidFontOptions {
+  /** Sink for warnings raised inside encode() / finalize() failure paths. */
+  onWarning?: (msg: string) => void
+}
+
 export class CidFontHandle {
   readonly kind = 'cid' as const
   /** Type 0 root ref — what page Resources / Font dicts point at. */
@@ -73,17 +78,22 @@ export class CidFontHandle {
   private readonly font: FontkitFont
   private readonly cff: boolean
   private readonly upem: number
+  private readonly originalBytes: Uint8Array
   /** gid → usage data, populated by encode(); finalize() emits /W + ToUnicode from this. */
   private readonly used = new Map<number, UsedGlyph>()
+  private readonly options: CidFontOptions
 
   constructor(
     private readonly writer: PdfWriter,
     bytes: Uint8Array,
+    options: CidFontOptions = {},
   ) {
     const fk = (fontkit as unknown as { create: (b: Uint8Array) => FontkitFont }).create(bytes)
     this.font = fk
     this.cff = fk.cff !== undefined && fk.cff !== null
     this.upem = fk.unitsPerEm ?? 1000
+    this.originalBytes = bytes
+    this.options = options
     this.fontFileKey = this.cff ? 'FontFile3' : 'FontFile2'
     // Reserve every ref now so callers can compose page dicts that reference
     // `this.ref` before any text has been drawn.
@@ -97,9 +107,24 @@ export class CidFontHandle {
    * Lay out `text` and return the Identity-H byte sequence (16-bit big-endian
    * gids). Updates the per-glyph usage map so finalize() emits exactly the
    * widths and ToUnicode entries we need.
+   *
+   * Defensive: fontkit layout occasionally throws (e.g. "Offset is outside
+   * the bounds of the DataView" on some Google Fonts unicode-range payloads).
+   * On any throw we surface a one-shot warning, return an empty encoding,
+   * and let the caller fall back to its standard-font path so the text isn't
+   * silently lost.
    */
   encode(text: string): { bytes: Uint8Array; widthUnits: number } {
-    const run = this.font.layout(text)
+    let run: FontkitGlyphRun
+    try {
+      run = this.font.layout(text)
+    } catch (err) {
+      this.options.onWarning?.(
+        `Layout failed for "${this.font.postscriptName ?? 'EmbeddedFont'}" on input "${truncate(text)}": ${(err as Error).message}. ` +
+          `Falling back to standard-font path for this run.`,
+      )
+      return { bytes: new Uint8Array(0), widthUnits: 0 }
+    }
     const out = new Uint8Array(run.glyphs.length * 2)
     let widthUnits = 0
     for (let i = 0; i < run.glyphs.length; i++) {
@@ -130,22 +155,35 @@ export class CidFontHandle {
     const bbox = this.font.bbox ?? { minX: 0, minY: 0, maxX: upem, maxY: upem }
 
     // Subset the font: include only the glyphs encode() recorded plus .notdef
-    // (glyph 0). fontkit's Subset.encode() returns clean TTF/CFF bytes — no
-    // woff2 wrapper, no extra tables — and assigns each included glyph a new
-    // GID starting at 1. We remember old→new in `oldToNew` so the descendant
-    // font's CIDToGIDMap can route content-stream CIDs (= original GIDs) to
-    // the renumbered glyphs in the subset.
-    const subset = this.font.createSubset()
-    const oldToNew = new Map<number, number>()
-    const sortedOldGids = [...this.used.keys()].sort((a, b) => a - b)
-    for (const oldGid of sortedOldGids) {
-      const glyph = this.font.getGlyph(oldGid)
-      const newGid = subset.includeGlyph(glyph)
-      oldToNew.set(oldGid, newGid)
+    // (glyph 0). On success we get clean TTF/CFF bytes and a renumbered GID
+    // map. On failure (fontkit chokes on a particular subset/glyph — e.g. the
+    // "Offset is outside the bounds of the DataView" we've seen with some
+    // Google Fonts unicode-range payloads) we fall back to embedding the
+    // original bytes verbatim with /CIDToGIDMap /Identity. The reader may
+    // need to do the woff2 unwrap itself, but the doc still saves and the
+    // ToUnicode CMap still gives copy-paste / search.
+    let subsetBytes: Uint8Array
+    let oldToNew: Map<number, number> | null
+    try {
+      const subset = this.font.createSubset()
+      oldToNew = new Map<number, number>()
+      const sortedOldGids = [...this.used.keys()].sort((a, b) => a - b)
+      for (const oldGid of sortedOldGids) {
+        const glyph = this.font.getGlyph(oldGid)
+        const newGid = subset.includeGlyph(glyph)
+        oldToNew.set(oldGid, newGid)
+      }
+      const subsetEncoded = subset.encode()
+      subsetBytes =
+        subsetEncoded instanceof Uint8Array ? subsetEncoded : new Uint8Array(subsetEncoded)
+    } catch (err) {
+      this.options.onWarning?.(
+        `Subsetting "${psName}" failed (${(err as Error).message}); embedding original font bytes verbatim. ` +
+          `PDF size will be larger and some readers may need to unwrap woff2 themselves.`,
+      )
+      subsetBytes = this.originalBytes
+      oldToNew = null
     }
-    const subsetEncoded = subset.encode()
-    const subsetBytes =
-      subsetEncoded instanceof Uint8Array ? subsetEncoded : new Uint8Array(subsetEncoded)
 
     const fontFileEntries: Record<string, PdfObject> = {}
     if (this.cff) fontFileEntries.Subtype = new PdfName('OpenType')
@@ -186,17 +224,24 @@ export class CidFontHandle {
       wEntries.push(new PdfArray([new PdfNumber(u.advance)]))
     }
 
-    // /CIDToGIDMap stream: index = CID (= original GID under Identity-H),
-    // value = new GID in the subset (16-bit big-endian). Unused CIDs map to 0
-    // (.notdef). We size the table to maxOldGid+1 so CIDs we never used are
-    // implicitly 0 without us writing them.
-    const maxOldGid = sortedOldGids.length > 0 ? (sortedOldGids[sortedOldGids.length - 1] ?? 0) : 0
-    const mapBytes = new Uint8Array((maxOldGid + 1) * 2)
-    for (const [oldGid, newGid] of oldToNew) {
-      mapBytes[oldGid * 2] = (newGid >> 8) & 0xff
-      mapBytes[oldGid * 2 + 1] = newGid & 0xff
+    // /CIDToGIDMap. With subsetting it's a stream that maps original CIDs
+    // (= old GIDs the content stream uses under Identity-H) to renumbered
+    // GIDs inside the subset. On the subset-failure fallback we keep the
+    // original GIDs intact (no remap), so /Identity is the right choice.
+    let cidToGidMap: PdfRef | PdfName
+    if (oldToNew !== null) {
+      const sortedOldGids = [...oldToNew.keys()].sort((a, b) => a - b)
+      const maxOldGid =
+        sortedOldGids.length > 0 ? (sortedOldGids[sortedOldGids.length - 1] ?? 0) : 0
+      const mapBytes = new Uint8Array((maxOldGid + 1) * 2)
+      for (const [oldGid, newGid] of oldToNew) {
+        mapBytes[oldGid * 2] = (newGid >> 8) & 0xff
+        mapBytes[oldGid * 2 + 1] = newGid & 0xff
+      }
+      cidToGidMap = this.writer.add(new PdfStream({}, mapBytes))
+    } else {
+      cidToGidMap = new PdfName('Identity')
     }
-    const cidToGidMapRef = this.writer.add(new PdfStream({}, mapBytes))
 
     this.writer.assign(
       this.descendantRef,
@@ -210,7 +255,7 @@ export class CidFontHandle {
           Supplement: new PdfNumber(0),
         }),
         FontDescriptor: this.descriptorRef,
-        CIDToGIDMap: cidToGidMapRef,
+        CIDToGIDMap: cidToGidMap,
         W: new PdfArray(wEntries),
       }),
     )
@@ -276,6 +321,10 @@ function encodeUtf16BE(cp: number): string {
   if (cp <= 0xffff) return hex4(cp)
   const x = cp - 0x10000
   return hex4(0xd800 + (x >> 10)) + hex4(0xdc00 + (x & 0x3ff))
+}
+
+function truncate(s: string): string {
+  return s.length > 32 ? `${s.slice(0, 32)}…` : s
 }
 
 function literal(s: string): PdfObject {

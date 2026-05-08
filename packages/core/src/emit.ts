@@ -61,7 +61,12 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
   for (const wf of opts.webFonts) {
     if (!usedCandidates.has(wf)) continue
     try {
-      cidFonts.set(wf, doc.embedCidFont(wf.bytes))
+      cidFonts.set(
+        wf,
+        doc.embedCidFont(wf.bytes, {
+          onWarning: (msg) => warnings.push(`@font-face "${wf.family}": ${msg}`),
+        }),
+      )
     } catch (err) {
       warnings.push(
         `Embedding @font-face "${wf.family}" failed: ${(err as Error).message}. ` +
@@ -115,9 +120,18 @@ export async function emitPdf(opts: EmitOptions): Promise<EmitResult> {
       for (const r of runs) {
         if (r.font.kind === 'cid') {
           const enc = r.font.encode(r.text)
-          if (enc.bytes.length === 0) continue
-          const widthPt = (enc.widthUnits * fontSizePt) / 1000
-          drawRuns.push({ font: r.font, text: r.text, widthDom: widthPt / scaleX })
+          if (enc.bytes.length > 0) {
+            const widthPt = (enc.widthUnits * fontSizePt) / 1000
+            drawRuns.push({ font: r.font, text: r.text, widthDom: widthPt / scaleX })
+            continue
+          }
+          // CID layout failed (encode emitted a warning). Try the span's
+          // standard-font fallback so the chars don't silently disappear.
+          const fallback = measureStandardFont(stdKey as StandardFontName, r.text, fontSizePt)
+          for (const ch of fallback.unencodable) unencodableStandard.add(ch)
+          if (fallback.widthPt > 0) {
+            drawRuns.push({ font: stdHandle, text: r.text, widthDom: fallback.widthPt / scaleX })
+          }
         } else {
           const m = measureStandardFont(stdKey as StandardFontName, r.text, fontSizePt)
           for (const ch of m.unencodable) unencodableStandard.add(ch)
