@@ -31,9 +31,20 @@ interface UsedGlyph {
   codePoints: number[]
 }
 
+interface FontkitGlyph {
+  id: number
+  advanceWidth: number
+  codePoints: number[]
+}
+
 interface FontkitGlyphRun {
-  glyphs: Array<{ id: number; advanceWidth: number; codePoints: number[] }>
+  glyphs: FontkitGlyph[]
   positions: Array<{ xAdvance: number }>
+}
+
+interface FontkitSubset {
+  includeGlyph(glyph: FontkitGlyph | number): number
+  encode(): Uint8Array | ArrayBuffer
 }
 
 interface FontkitFont {
@@ -44,8 +55,11 @@ interface FontkitFont {
   ascent?: number
   descent?: number
   capHeight?: number
+  numGlyphs?: number
   bbox?: { minX: number; minY: number; maxX: number; maxY: number }
   layout(text: string): FontkitGlyphRun
+  getGlyph(gid: number): FontkitGlyph
+  createSubset(): FontkitSubset
 }
 
 export class CidFontHandle {
@@ -59,7 +73,6 @@ export class CidFontHandle {
   private readonly font: FontkitFont
   private readonly cff: boolean
   private readonly upem: number
-  private readonly bytes: Uint8Array
   /** gid → usage data, populated by encode(); finalize() emits /W + ToUnicode from this. */
   private readonly used = new Map<number, UsedGlyph>()
 
@@ -67,7 +80,6 @@ export class CidFontHandle {
     private readonly writer: PdfWriter,
     bytes: Uint8Array,
   ) {
-    this.bytes = bytes
     const fk = (fontkit as unknown as { create: (b: Uint8Array) => FontkitFont }).create(bytes)
     this.font = fk
     this.cff = fk.cff !== undefined && fk.cff !== null
@@ -117,9 +129,27 @@ export class CidFontHandle {
     const scale = 1000 / upem
     const bbox = this.font.bbox ?? { minX: 0, minY: 0, maxX: upem, maxY: upem }
 
+    // Subset the font: include only the glyphs encode() recorded plus .notdef
+    // (glyph 0). fontkit's Subset.encode() returns clean TTF/CFF bytes — no
+    // woff2 wrapper, no extra tables — and assigns each included glyph a new
+    // GID starting at 1. We remember old→new in `oldToNew` so the descendant
+    // font's CIDToGIDMap can route content-stream CIDs (= original GIDs) to
+    // the renumbered glyphs in the subset.
+    const subset = this.font.createSubset()
+    const oldToNew = new Map<number, number>()
+    const sortedOldGids = [...this.used.keys()].sort((a, b) => a - b)
+    for (const oldGid of sortedOldGids) {
+      const glyph = this.font.getGlyph(oldGid)
+      const newGid = subset.includeGlyph(glyph)
+      oldToNew.set(oldGid, newGid)
+    }
+    const subsetEncoded = subset.encode()
+    const subsetBytes =
+      subsetEncoded instanceof Uint8Array ? subsetEncoded : new Uint8Array(subsetEncoded)
+
     const fontFileEntries: Record<string, PdfObject> = {}
     if (this.cff) fontFileEntries.Subtype = new PdfName('OpenType')
-    this.writer.assign(this.fontFileRef, new PdfStream(fontFileEntries, this.bytes))
+    this.writer.assign(this.fontFileRef, new PdfStream(fontFileEntries, subsetBytes))
 
     this.writer.assign(
       this.descriptorRef,
@@ -156,6 +186,18 @@ export class CidFontHandle {
       wEntries.push(new PdfArray([new PdfNumber(u.advance)]))
     }
 
+    // /CIDToGIDMap stream: index = CID (= original GID under Identity-H),
+    // value = new GID in the subset (16-bit big-endian). Unused CIDs map to 0
+    // (.notdef). We size the table to maxOldGid+1 so CIDs we never used are
+    // implicitly 0 without us writing them.
+    const maxOldGid = sortedOldGids.length > 0 ? (sortedOldGids[sortedOldGids.length - 1] ?? 0) : 0
+    const mapBytes = new Uint8Array((maxOldGid + 1) * 2)
+    for (const [oldGid, newGid] of oldToNew) {
+      mapBytes[oldGid * 2] = (newGid >> 8) & 0xff
+      mapBytes[oldGid * 2 + 1] = newGid & 0xff
+    }
+    const cidToGidMapRef = this.writer.add(new PdfStream({}, mapBytes))
+
     this.writer.assign(
       this.descendantRef,
       new PdfDict({
@@ -168,7 +210,7 @@ export class CidFontHandle {
           Supplement: new PdfNumber(0),
         }),
         FontDescriptor: this.descriptorRef,
-        CIDToGIDMap: new PdfName('Identity'),
+        CIDToGIDMap: cidToGidMapRef,
         W: new PdfArray(wEntries),
       }),
     )

@@ -38,7 +38,7 @@ describe('CidFontHandle', () => {
     expect(text).toMatch(/\/Subtype\s*\/CIDFontType[02]/)
   })
 
-  it('declares /CIDSystemInfo and /CIDToGIDMap /Identity on the descendant', async () => {
+  it('declares /CIDSystemInfo and a /CIDToGIDMap on the descendant', async () => {
     const bytes = await fetchInterBytes()
     const writer = new PdfWriter()
     const handle = new CidFontHandle(writer, bytes)
@@ -46,7 +46,9 @@ describe('CidFontHandle', () => {
     handle.finalize()
     const text = dump(writer, handle.ref)
     expect(text).toMatch(/\/CIDSystemInfo/)
-    expect(text).toMatch(/\/CIDToGIDMap\s*\/Identity/)
+    // /CIDToGIDMap must be either /Identity (no subsetting) or an indirect
+    // stream ref (subsetting renumbered the gids).
+    expect(text).toMatch(/\/CIDToGIDMap\s+(\/Identity|\d+\s+\d+\s+R)/)
   })
 
   it('embeds the font bytes as a FontFile2 (TTF) or FontFile3 (CFF) stream', async () => {
@@ -84,5 +86,31 @@ describe('CidFontHandle', () => {
     // Each `gid [advance]` shows up twice for "AB" — A and B are distinct glyphs.
     const pairs = text.match(/\d+\s+\[\d+\]/g) ?? []
     expect(pairs.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('subsets the font so the saved doc never contains the original woff2 magic', async () => {
+    const bytes = await fetchInterBytes()
+    // Sanity: input really is woff2.
+    expect(new TextDecoder('latin1').decode(bytes.slice(0, 4))).toBe('wOF2')
+    const writer = new PdfWriter()
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('Hi')
+    handle.finalize()
+    const out = dump(writer, handle.ref)
+    // Subsetting unwraps to clean TTF/CFF bytes — the woff2 brotli magic must
+    // not be present in the embedded FontFile stream.
+    expect(out).not.toContain('wOF2')
+  })
+
+  it('uses a CIDToGIDMap stream (not /Identity) once a subset remaps gids', async () => {
+    const bytes = await fetchInterBytes()
+    const writer = new PdfWriter()
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('AB')
+    handle.finalize()
+    const text = dump(writer, handle.ref)
+    // Either /Identity OR an indirect stream ref; for a subsetted font the
+    // gids in the stream are renumbered, so the map must be a stream.
+    expect(text).toMatch(/\/CIDToGIDMap\s+\d+\s+\d+\s+R/)
   })
 })
