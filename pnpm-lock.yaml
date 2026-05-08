@@ -19,6 +19,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@pdf-lib/standard-fonts':
+        specifier: ^1.0.0
+        version: 1.0.0
       fontkit:
         specifier: ^2.0.4
         version: 2.0.4
