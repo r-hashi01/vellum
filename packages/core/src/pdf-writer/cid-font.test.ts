@@ -1,14 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { embedCidFontStub } from './cid-font'
+import { CidFontHandle } from './cid-font'
 import { PdfDict, PdfName } from './object'
 import { PdfWriter } from './writer'
 
-/**
- * Tests fetch a real woff2 from fonts.gstatic.com. The structural assertions
- * we make here (Type0 / Identity-H / CIDFontType2|0 / FontFile2|3) are
- * format-level, not face-specific, so any well-formed font would do; using
- * the Inter latin subset matches what the rest of the suite already pulls.
- */
 const INTER_LATIN =
   'https://fonts.gstatic.com/s/inter/v13/UcC73FwrK3iLTeHuS_fvQtMwCp50KnMa1ZL7.woff2'
 
@@ -23,18 +17,20 @@ function decode(b: Uint8Array): string {
   return dec.decode(b)
 }
 
-/** Serialize the writer with `handle.ref` referenced from a tiny stand-in
- * catalog so the tree is rooted and `serialize()` is happy. */
-function dump(writer: PdfWriter, fontRef: ReturnType<typeof embedCidFontStub>['ref']): string {
+function dump(writer: PdfWriter, fontRef: ReturnType<() => CidFontHandle>['ref']): string {
   const root = writer.add(new PdfDict({ Type: new PdfName('Catalog'), TestFont: fontRef }))
   return decode(writer.serialize(root))
 }
 
-describe('embedCidFontStub', () => {
-  it('emits a Type 0 font dict with Identity-H encoding and a CID-keyed descendant', async () => {
+describe('CidFontHandle', () => {
+  it('finalize() assigns a Type 0 font dict with Identity-H + CID descendant', async () => {
     const bytes = await fetchInterBytes()
     const writer = new PdfWriter()
-    const handle = embedCidFontStub(writer, bytes)
+    const handle = new CidFontHandle(writer, bytes)
+    // Encode something so /W is non-trivial; the structural shape doesn't
+    // depend on it but exercising the path catches the obvious regressions.
+    handle.encode('A')
+    handle.finalize()
     const text = dump(writer, handle.ref)
     expect(text).toMatch(/\/Type\s*\/Font/)
     expect(text).toMatch(/\/Subtype\s*\/Type0/)
@@ -42,10 +38,12 @@ describe('embedCidFontStub', () => {
     expect(text).toMatch(/\/Subtype\s*\/CIDFontType[02]/)
   })
 
-  it('declares /CIDSystemInfo and /CIDToGIDMap /Identity on the descendant font', async () => {
+  it('declares /CIDSystemInfo and /CIDToGIDMap /Identity on the descendant', async () => {
     const bytes = await fetchInterBytes()
     const writer = new PdfWriter()
-    const handle = embedCidFontStub(writer, bytes)
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('A')
+    handle.finalize()
     const text = dump(writer, handle.ref)
     expect(text).toMatch(/\/CIDSystemInfo/)
     expect(text).toMatch(/\/CIDToGIDMap\s*\/Identity/)
@@ -54,8 +52,37 @@ describe('embedCidFontStub', () => {
   it('embeds the font bytes as a FontFile2 (TTF) or FontFile3 (CFF) stream', async () => {
     const bytes = await fetchInterBytes()
     const writer = new PdfWriter()
-    const handle = embedCidFontStub(writer, bytes)
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('A')
+    handle.finalize()
     const text = dump(writer, handle.ref)
     expect(text).toMatch(/\/FontFile[23]/)
+  })
+
+  it('emits a /ToUnicode CMap that maps each used gid back to its Unicode code point', async () => {
+    const bytes = await fetchInterBytes()
+    const writer = new PdfWriter()
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('A')
+    handle.finalize()
+    const text = dump(writer, handle.ref)
+    expect(text).toMatch(/\/ToUnicode/)
+    expect(text).toMatch(/beginbfchar/)
+    expect(text).toMatch(/endbfchar/)
+    // 'A' is U+0041; the CMap must contain `<gidHex> <0041>`.
+    expect(text).toMatch(/<[0-9A-F]{4}>\s*<0041>/)
+  })
+
+  it('emits a /W array entry for every glyph encode() produced', async () => {
+    const bytes = await fetchInterBytes()
+    const writer = new PdfWriter()
+    const handle = new CidFontHandle(writer, bytes)
+    handle.encode('AB')
+    handle.finalize()
+    const text = dump(writer, handle.ref)
+    expect(text).toMatch(/\/W\s*\[/)
+    // Each `gid [advance]` shows up twice for "AB" — A and B are distinct glyphs.
+    const pairs = text.match(/\d+\s+\[\d+\]/g) ?? []
+    expect(pairs.length).toBeGreaterThanOrEqual(2)
   })
 })

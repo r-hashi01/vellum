@@ -1,3 +1,4 @@
+import { CidFontHandle } from './cid-font'
 import { parseJpegInfo } from './jpeg'
 import {
   PdfArray,
@@ -45,12 +46,16 @@ export type StandardFontName =
  * the actual glyphs for the standard 14 fonts — we only need to register a
  * Type 1 font dict referencing the name + WinAnsi encoding.
  */
-export interface FontHandle {
+export interface StandardFontHandle {
+  kind: 'standard'
   ref: PdfRef
   name: StandardFontName
   /** True if encoding is the standard 14's WinAnsi bytes (most fonts). */
   winAnsi: boolean
 }
+
+/** Discriminated union of every font kind drawText understands. */
+export type FontHandle = StandardFontHandle | CidFontHandle
 
 interface PageData {
   pageRef: PdfRef
@@ -113,10 +118,17 @@ export class Page {
       name = `F${this.data.nextFontId++}`
       this.data.fonts.set(font.ref, name)
     }
-    const { bytes: textBytes, unencodable } = encodeWinAnsi(text)
-    for (const ch of unencodable) this.data.unencodable.add(ch)
+    let textBytes: Uint8Array
+    if (font.kind === 'standard') {
+      const r = encodeWinAnsi(text)
+      for (const ch of r.unencodable) this.data.unencodable.add(ch)
+      textBytes = r.bytes
+    } else {
+      // CID-keyed: fontkit lays out the run, encode() returns Identity-H gids
+      // and tracks them so the font's /W + /ToUnicode reflect actual usage.
+      textBytes = font.encode(text).bytes
+    }
     if (textBytes.length === 0) return
-    // Use a hex string so every byte is byte-exact regardless of escape rules.
     const hex = bytesToHex(textBytes)
     const op =
       `BT\n` +
@@ -191,6 +203,7 @@ export class PdfDoc {
   private readonly pagesRef: PdfRef
   private readonly pages: PageData[] = []
   private readonly unencodable = new Set<string>()
+  private readonly cidFonts: CidFontHandle[] = []
 
   constructor() {
     this.pagesRef = this.writer.alloc()
@@ -218,7 +231,7 @@ export class PdfDoc {
    * encoding (WinAnsi for the Latin-1ish fonts, default for Symbol /
    * ZapfDingbats which have built-in encodings).
    */
-  embedStandardFont(name: StandardFontName): FontHandle {
+  embedStandardFont(name: StandardFontName): StandardFontHandle {
     const winAnsi = name !== 'Symbol' && name !== 'ZapfDingbats'
     const entries: Record<string, PdfObject> = {
       Type: new PdfName('Font'),
@@ -227,7 +240,19 @@ export class PdfDoc {
     }
     if (winAnsi) entries.Encoding = new PdfName('WinAnsiEncoding')
     const ref = this.writer.add(new PdfDict(entries))
-    return { ref, name, winAnsi }
+    return { kind: 'standard', ref, name, winAnsi }
+  }
+
+  /**
+   * Embed a CID-keyed (Type 0) font from raw font bytes (TTF / OTF / WOFF /
+   * WOFF2 — fontkit handles the unwrapping). Returns a handle that drawText
+   * uses to lay out runs; the font's /W array and /ToUnicode CMap are
+   * generated at save() based on the glyphs that actually got drawn.
+   */
+  embedCidFont(bytes: Uint8Array): CidFontHandle {
+    const handle = new CidFontHandle(this.writer, bytes)
+    this.cidFonts.push(handle)
+    return handle
   }
 
   /**
@@ -331,6 +356,10 @@ export class PdfDoc {
   }
 
   save(): Uint8Array {
+    // Finalize every CID font now that all draws are recorded — their /W and
+    // /ToUnicode entries reflect exactly the glyphs the document used.
+    for (const f of this.cidFonts) f.finalize()
+
     for (const p of this.pages) {
       const content = mergeBytes(p.contentOps)
       const contentRef = this.writer.add(new PdfStream({}, content))

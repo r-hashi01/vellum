@@ -98,6 +98,30 @@ describe('PdfDoc', () => {
     }
   })
 
+  it('round-trips Latin text drawn with an embedded CID font through pdfjs getTextContent', async () => {
+    const res = await fetch(
+      'https://fonts.gstatic.com/s/inter/v13/UcC73FwrK3iLTeHuS_fvQtMwCp50KnMa1ZL7.woff2',
+    )
+    const fontBytes = new Uint8Array(await res.arrayBuffer())
+
+    const doc = new PdfDoc()
+    const inter = await doc.embedCidFont(fontBytes)
+    const page = doc.addPage(400, 200)
+    page.drawText('Hello PDF', inter, 50, 100, 24)
+    const bytes = doc.save()
+
+    const pdf = await loadPdf(bytes)
+    try {
+      const pdfPage = await pdf.getPage(1)
+      const content = await pdfPage.getTextContent()
+      const items = content.items as Array<{ str: string }>
+      const joined = items.map((it) => it.str).join('')
+      expect(joined).toContain('Hello PDF')
+    } finally {
+      pdf.destroy()
+    }
+  })
+
   it('reports characters that fall outside WinAnsi as warnings rather than corrupting the stream', () => {
     const doc = new PdfDoc()
     const helv = doc.embedStandardFont('Helvetica')
