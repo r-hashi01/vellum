@@ -9,7 +9,6 @@
     "browser",
     "vector-text",
     "raster",
-    "pdf-lib",
     "client-side"
   ],
   "homepage": "https://github.com/r-hashi01/vellum#readme",
@@ -47,8 +46,7 @@
   "dependencies": {
     "@pdf-lib/standard-fonts": "^1.0.0",
     "fontkit": "^2.0.4",
-    "html-to-image": "^1.11.13",
-    "pdf-lib": "^1.17.1"
+    "html-to-image": "^1.11.13"
   },
   "devDependencies": {
     "@types/fontkit": "^2.0.9",

@@ -1,8 +1,9 @@
 import type { TextSpan } from './types'
 
 /**
- * One of the 14 PDF standard fonts. The string values match pdf-lib's
- * `StandardFonts` enum so they can be passed directly to `embedFont`.
+ * One of the 14 PDF standard fonts. The string values are the canonical
+ * PostScript-style names every PDF reader recognizes, and they match the
+ * `StandardFontName` shape `pdf-doc.embedStandardFont` accepts.
  *
  * Phase 1 only uses the 12 Latin variants (Helvetica / Times / Courier ×
  * Regular/Bold/Italic/BoldItalic). Symbol and ZapfDingbats are intentionally

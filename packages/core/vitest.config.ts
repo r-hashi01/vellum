@@ -3,7 +3,7 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   optimizeDeps: {
-    include: ['html-to-image', 'pdf-lib'],
+    include: ['html-to-image', '@pdf-lib/standard-fonts'],
   },
   test: {
     browser: {

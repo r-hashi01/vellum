@@ -1,23 +1,20 @@
-import { PDFDict, PDFDocument, PDFName } from 'pdf-lib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseColor } from './color'
 import { domToPdf } from './dom-to-pdf'
 import type { TimingEvent } from './types'
 import { extractSpans } from './walk'
 
+/**
+ * Scan the raw PDF bytes for `/BaseFont /Name` markers — every embedded
+ * font dict (standard + custom) carries one. Cheaper than instantiating
+ * a real parser, and not bound to any particular PDF library.
+ */
 async function embeddedFontNames(blob: Blob): Promise<Set<string>> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
-  const doc = await PDFDocument.load(bytes)
+  const text = new TextDecoder('latin1').decode(bytes)
   const names = new Set<string>()
-  for (const page of doc.getPages()) {
-    const resources = page.node.Resources()
-    const fontDict = resources?.lookup(PDFName.of('Font'), PDFDict)
-    if (!fontDict) continue
-    for (const key of fontDict.keys()) {
-      const font = fontDict.lookup(key, PDFDict)
-      const baseFont = font.lookup(PDFName.of('BaseFont'))
-      if (baseFont instanceof PDFName) names.add(baseFont.asString().replace(/^\//, ''))
-    }
+  for (const m of text.matchAll(/\/BaseFont\s*\/([A-Za-z0-9_\-+]+)/g)) {
+    if (m[1]) names.add(m[1])
   }
   return names
 }
