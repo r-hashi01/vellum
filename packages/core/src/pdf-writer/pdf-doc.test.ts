@@ -108,6 +108,66 @@ describe('PdfDoc', () => {
     expect(warnings.some((w) => w.includes('→'))).toBe(true)
   })
 
+  it('embeds a PNG image (FlateDecode RGB) so pdfjs sees a paintImageXObject', async () => {
+    const canvas = new OffscreenCanvas(40, 30)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('2d context unavailable')
+    ctx.fillStyle = '#33aa66'
+    ctx.fillRect(0, 0, 40, 30)
+    const blob = await canvas.convertToBlob({ type: 'image/png' })
+    const pngBytes = new Uint8Array(await blob.arrayBuffer())
+
+    const doc = new PdfDoc()
+    const handle = await doc.embedPng(pngBytes)
+    expect(handle.width).toBe(40)
+    expect(handle.height).toBe(30)
+    const page = doc.addPage(400, 300)
+    page.drawImage(handle, 0, 0, 400, 300)
+    const bytes = doc.save()
+
+    const pdf = await loadPdf(bytes)
+    try {
+      const pdfPage = await pdf.getPage(1)
+      const opList = await pdfPage.getOperatorList()
+      const { OPS } = await import('pdfjs-dist')
+      expect(opList.fnArray.includes(OPS.paintImageXObject)).toBe(true)
+    } finally {
+      pdf.destroy()
+    }
+  })
+
+  it('embeds an opaque PNG without an SMask, and an RGBA PNG with one', async () => {
+    // Opaque PNG
+    const opaqueCanvas = new OffscreenCanvas(8, 8)
+    const oc = opaqueCanvas.getContext('2d')
+    if (!oc) throw new Error('2d context unavailable')
+    oc.fillStyle = 'rgba(255,0,0,1)'
+    oc.fillRect(0, 0, 8, 8)
+    const opaqueBytes = new Uint8Array(
+      await (await opaqueCanvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
+    )
+
+    // RGBA PNG (semi-transparent)
+    const alphaCanvas = new OffscreenCanvas(8, 8)
+    const ac = alphaCanvas.getContext('2d')
+    if (!ac) throw new Error('2d context unavailable')
+    ac.fillStyle = 'rgba(0,0,255,0.5)'
+    ac.fillRect(0, 0, 8, 8)
+    const alphaBytes = new Uint8Array(
+      await (await alphaCanvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
+    )
+
+    const doc = new PdfDoc()
+    await doc.embedPng(opaqueBytes)
+    await doc.embedPng(alphaBytes)
+    doc.addPage(100, 100)
+    const bytes = doc.save()
+    const text = new TextDecoder('latin1').decode(bytes)
+    // Exactly one /SMask reference in the doc — the RGBA image.
+    const smaskCount = (text.match(/\/SMask /g) ?? []).length
+    expect(smaskCount).toBe(1)
+  })
+
   it('reuses the same Image XObject when drawn twice on the same page', async () => {
     const canvas = new OffscreenCanvas(8, 8)
     const ctx = canvas.getContext('2d')

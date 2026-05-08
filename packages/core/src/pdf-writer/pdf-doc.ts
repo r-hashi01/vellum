@@ -134,6 +134,58 @@ function bytesToHex(bytes: Uint8Array): string {
   return s
 }
 
+/**
+ * Split an RGBA pixel array into separate RGB and (optional) Alpha planes.
+ * `hasAlpha` is true iff at least one pixel is not fully opaque — letting
+ * embedPng skip the SMask entirely for opaque inputs.
+ */
+function splitRgba(rgba: Uint8ClampedArray): {
+  rgb: Uint8Array
+  alpha: Uint8Array | null
+  hasAlpha: boolean
+} {
+  const px = rgba.length / 4
+  const rgb = new Uint8Array(px * 3)
+  const alpha = new Uint8Array(px)
+  let hasAlpha = false
+  for (let i = 0, j = 0, k = 0; i < rgba.length; i += 4, j += 3, k++) {
+    rgb[j] = rgba[i] ?? 0
+    rgb[j + 1] = rgba[i + 1] ?? 0
+    rgb[j + 2] = rgba[i + 2] ?? 0
+    const a = rgba[i + 3] ?? 255
+    alpha[k] = a
+    if (a !== 255) hasAlpha = true
+  }
+  return { rgb, alpha: hasAlpha ? alpha : null, hasAlpha }
+}
+
+/**
+ * Deflate raw bytes via the browser's CompressionStream. PDF's FlateDecode
+ * filter expects exactly this format (zlib-wrapped DEFLATE). No PNG predictor
+ * gymnastics needed — we serialize the raw pixel grid directly, scanline order.
+ */
+async function deflateBytes(input: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([new Uint8Array(input)])
+    .stream()
+    .pipeThrough(new CompressionStream('deflate'))
+  const chunks: Uint8Array[] = []
+  const reader = stream.getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+  }
+  let total = 0
+  for (const c of chunks) total += c.length
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) {
+    out.set(c, off)
+    off += c.length
+  }
+  return out
+}
+
 export class PdfDoc {
   private readonly writer = new PdfWriter()
   private readonly pagesRef: PdfRef
@@ -191,6 +243,61 @@ export class PdfDoc {
         `text containing them was dropped from the selectable layer (the raster ` +
         `still shows them). Sample: "${sample}".`,
     ]
+  }
+
+  /**
+   * Embed a PNG-encoded image as an Image XObject. PNG's IDAT layout (zlib
+   * stream wrapping per-row predicted pixel data) doesn't map cleanly to
+   * PDF's `/Filter /FlateDecode`-only path without the predictor metadata,
+   * so we take a pragmatic route: decode the PNG via the browser's
+   * `createImageBitmap` + canvas, read raw RGBA, then re-deflate. If any
+   * pixel has alpha < 255, alpha goes into a separate grayscale Image
+   * XObject linked via `/SMask`.
+   */
+  async embedPng(bytes: Uint8Array): Promise<ImageHandle> {
+    const blob = new Blob([new Uint8Array(bytes)], { type: 'image/png' })
+    const bitmap = await createImageBitmap(blob)
+    try {
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('embedPng: 2d context unavailable')
+      ctx.drawImage(bitmap, 0, 0)
+      const img = ctx.getImageData(0, 0, bitmap.width, bitmap.height)
+      const { rgb, alpha, hasAlpha } = splitRgba(img.data)
+
+      const rgbStream = await deflateBytes(rgb)
+      const entries: Record<string, PdfObject> = {
+        Type: new PdfName('XObject'),
+        Subtype: new PdfName('Image'),
+        Width: new PdfNumber(bitmap.width),
+        Height: new PdfNumber(bitmap.height),
+        BitsPerComponent: new PdfNumber(8),
+        ColorSpace: new PdfName('DeviceRGB'),
+        Filter: new PdfName('FlateDecode'),
+      }
+      if (hasAlpha && alpha) {
+        const alphaStream = await deflateBytes(alpha)
+        const smaskRef = this.writer.add(
+          new PdfStream(
+            {
+              Type: new PdfName('XObject'),
+              Subtype: new PdfName('Image'),
+              Width: new PdfNumber(bitmap.width),
+              Height: new PdfNumber(bitmap.height),
+              BitsPerComponent: new PdfNumber(8),
+              ColorSpace: new PdfName('DeviceGray'),
+              Filter: new PdfName('FlateDecode'),
+            },
+            alphaStream,
+          ),
+        )
+        entries.SMask = smaskRef
+      }
+      const ref = this.writer.add(new PdfStream(entries, rgbStream))
+      return { ref, width: bitmap.width, height: bitmap.height }
+    } finally {
+      bitmap.close()
+    }
   }
 
   /**
