@@ -102,6 +102,33 @@ describe('CidFontHandle', () => {
     expect(out).not.toContain('wOF2')
   })
 
+  it('handles every Inter subset Google Fonts currently ships without throwing (subset OR fallback)', async () => {
+    // Tracking issue: fontkit@2.0.4 cannot re-encode every Google Fonts
+    // Inter v20 subset (some throw "Offset is outside the bounds of the
+    // DataView" in both sparse and full-glyph paths). We don't gate the
+    // suite on fontkit shipping a fix — instead we lock the *contract*
+    // that finalize() never throws, regardless of which fallback tier it
+    // ends up on (sparse → full → original-bytes-verbatim).
+    const css = await fetch(
+      'https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap',
+      { headers: { 'User-Agent': 'Mozilla/5.0 Chrome/120 Safari/537.36' } },
+    ).then((r) => r.text())
+    const urls = [
+      ...new Set(
+        [...css.matchAll(/https:\/\/fonts\.gstatic\.com\/[^)]+\.woff2/g)].map((m) => m[0]),
+      ),
+    ]
+    expect(urls.length).toBeGreaterThan(0)
+    for (const url of urls) {
+      const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
+      const writer = new PdfWriter()
+      const handle = new CidFontHandle(writer, bytes)
+      // No-op; just must not throw.
+      handle.encode('Hello world Cześć Привет')
+      expect(() => handle.finalize()).not.toThrow()
+    }
+  })
+
   it('uses a CIDToGIDMap stream (not /Identity) once a subset remaps gids', async () => {
     const bytes = await fetchInterBytes()
     const writer = new PdfWriter()

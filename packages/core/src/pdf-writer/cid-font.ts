@@ -154,35 +154,65 @@ export class CidFontHandle {
     const scale = 1000 / upem
     const bbox = this.font.bbox ?? { minX: 0, minY: 0, maxX: upem, maxY: upem }
 
-    // Subset the font: include only the glyphs encode() recorded plus .notdef
-    // (glyph 0). On success we get clean TTF/CFF bytes and a renumbered GID
-    // map. On failure (fontkit chokes on a particular subset/glyph — e.g. the
-    // "Offset is outside the bounds of the DataView" we've seen with some
-    // Google Fonts unicode-range payloads) we fall back to embedding the
-    // original bytes verbatim with /CIDToGIDMap /Identity. The reader may
-    // need to do the woff2 unwrap itself, but the doc still saves and the
-    // ToUnicode CMap still gives copy-paste / search.
+    // Subset the font: include only the glyphs encode() recorded plus .notdef.
+    // On success we get clean TTF/CFF bytes and a renumbered GID map.
+    //
+    // Two fallbacks for fontkit failures (we've seen its 2.0.4 sparse-subset
+    // path throw `Offset is outside the bounds of the DataView` on certain
+    // Google Fonts Inter v20 subsets):
+    //
+    //   1. Re-run with EVERY glyph included. fontkit re-encoding the full
+    //      font is more reliable; we lose the size win on this one font, but
+    //      we still get clean sfnt bytes the reader can render with.
+    //   2. If that also fails, embed the original bytes (possibly woff2)
+    //      verbatim. The doc still saves and the ToUnicode CMap drives
+    //      copy-paste / search; visual rendering may degrade in readers that
+    //      don't unwrap woff2 themselves.
     let subsetBytes: Uint8Array
     let oldToNew: Map<number, number> | null
-    try {
-      const subset = this.font.createSubset()
-      oldToNew = new Map<number, number>()
+    const trySparse = (): { bytes: Uint8Array; map: Map<number, number> } => {
+      const sub = this.font.createSubset()
+      const map = new Map<number, number>()
       const sortedOldGids = [...this.used.keys()].sort((a, b) => a - b)
       for (const oldGid of sortedOldGids) {
         const glyph = this.font.getGlyph(oldGid)
-        const newGid = subset.includeGlyph(glyph)
-        oldToNew.set(oldGid, newGid)
+        map.set(oldGid, sub.includeGlyph(glyph))
       }
-      const subsetEncoded = subset.encode()
-      subsetBytes =
-        subsetEncoded instanceof Uint8Array ? subsetEncoded : new Uint8Array(subsetEncoded)
-    } catch (err) {
-      this.options.onWarning?.(
-        `Subsetting "${psName}" failed (${(err as Error).message}); embedding original font bytes verbatim. ` +
-          `PDF size will be larger and some readers may need to unwrap woff2 themselves.`,
-      )
-      subsetBytes = this.originalBytes
-      oldToNew = null
+      const enc = sub.encode()
+      return { bytes: enc instanceof Uint8Array ? enc : new Uint8Array(enc), map }
+    }
+    const tryFull = (): Uint8Array => {
+      const sub = this.font.createSubset()
+      const total = this.font.numGlyphs ?? 0
+      for (let gid = 0; gid < total; gid++) {
+        sub.includeGlyph(this.font.getGlyph(gid))
+      }
+      const enc = sub.encode()
+      return enc instanceof Uint8Array ? enc : new Uint8Array(enc)
+    }
+    try {
+      const result = trySparse()
+      subsetBytes = result.bytes
+      oldToNew = result.map
+    } catch (sparseErr) {
+      try {
+        subsetBytes = tryFull()
+        // With every glyph included GID 0..N-1 maps identity, so /Identity
+        // is correct (and simpler than emitting a 2N-byte stream).
+        oldToNew = null
+        this.options.onWarning?.(
+          `Sparse subsetting "${psName}" failed (${(sparseErr as Error).message}); ` +
+            `re-encoded the full font instead — PDF size will be larger.`,
+        )
+      } catch (fullErr) {
+        subsetBytes = this.originalBytes
+        oldToNew = null
+        this.options.onWarning?.(
+          `Subsetting "${psName}" failed (sparse: ${(sparseErr as Error).message}; ` +
+            `full: ${(fullErr as Error).message}); embedding original font bytes verbatim. ` +
+            `Some readers may need to unwrap woff2 themselves.`,
+        )
+      }
     }
 
     const fontFileEntries: Record<string, PdfObject> = {}
